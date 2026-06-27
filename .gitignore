@@ -1,0 +1,15 @@
+# Kernel module out-of-tree build artifacts
+*.o
+*.ko
+*.mod
+*.mod.c
+*.mod.o
+*.a
+*.cmd
+*.d
+*.symvers
+*.order
+*.gcno
+.tmp_versions/
+.cache.mk
+modules.builtin*
