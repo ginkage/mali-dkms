@@ -60,5 +60,12 @@ all:
 modules_install:
 	$(MAKE) -C $(VALHALL_DIR) KERNEL_SRC=$(KDIR) $(MALI_CONFIGS) modules_install
 
+# `clean` deletes the out-of-tree build products directly instead of recursing
+# into the kernel's clean. The ARM Kbuild has dependency checks that error out
+# (e.g. FENCE_DEBUG requires CONFIG_SYNC_FILE) using kernel CONFIG_* that are only
+# loaded for a build, not for the 'clean' target — so a kbuild clean aborts with
+# "Error 2". DKMS runs CLEAN before and after every build, so it must succeed.
 clean:
-	$(MAKE) -C $(VALHALL_DIR) KERNEL_SRC=$(KDIR) $(MALI_CONFIGS) clean
+	find $(VALHALL_DIR) -type f \( -name '*.o' -o -name '*.ko' -o -name '*.mod' \
+		-o -name '*.mod.c' -o -name '*.mod.o' -o -name '*.cmd' -o -name '*.d' \
+		-o -name '*.a' -o -name 'modules.order' -o -name 'Module.symvers' \) -delete
