@@ -1,0 +1,83 @@
+mm: add PGTY_mali_gpu movable page type for the Mali kbase GPU driver
+
+Kernel 6.17 replaced the per-page __SetPageMovable() API with a page-type
+based scheme (set_movable_ops(ops, enum pagetype) in mm/migrate.c). The
+out-of-tree ARM Mali "kbase" GPU driver needs its own movable page type to
+re-enable GPU page migration on >= 6.17 kernels.
+
+Add a PGTY_mali_gpu (0xf9) page type with the usual PAGE_TYPE_OPS helpers,
+wire it into set_movable_ops()/page_movable_ops()/page_has_movable_ops(), and
+expose a self-referential #define so the out-of-tree module can detect the
+patch via #ifdef PGTY_mali_gpu (degrading gracefully to "page migration
+disabled" when absent).
+
+Carried by mali-dkms (Rockchip Mali-Valhall DKMS). Not for upstream.
+---
+--- a/include/linux/page-flags.h	2026-06-27 23:18:42.089091550 +0100
++++ b/include/linux/page-flags.h	2026-06-27 23:22:07.510681933 +0100
+@@ -923,10 +923,15 @@
+ 	PGTY_zsmalloc		= 0xf6,
+ 	PGTY_unaccepted		= 0xf7,
+ 	PGTY_large_kmalloc	= 0xf8,
++	PGTY_mali_gpu		= 0xf9,
+ 
+ 	PGTY_mapcount_underflow = 0xff
+ };
+ 
++/* Let out-of-tree modules (the ARM Mali "kbase" GPU driver) detect at
++ * preprocess time that this kernel carries the PGTY_mali_gpu page type. */
++#define PGTY_mali_gpu PGTY_mali_gpu
++
+ static inline bool page_type_has_type(int page_type)
+ {
+ 	return page_type < (PGTY_mapcount_underflow << 24);
+@@ -1055,6 +1060,9 @@
+ PAGE_TYPE_OPS(Unaccepted, unaccepted, unaccepted)
+ PAGE_TYPE_OPS(LargeKmalloc, large_kmalloc, large_kmalloc)
+ 
++/* Mali kbase GPU pages registered as movable_ops (see mm/migrate.c). */
++PAGE_TYPE_OPS(MaliGpu, mali_gpu, mali_gpu)
++
+ /**
+  * PageHuge - Determine if the page belongs to hugetlbfs
+  * @page: The page to test.
+@@ -1136,7 +1144,7 @@
+ static inline bool page_has_movable_ops(const struct page *page)
+ {
+ 	return PageMovableOps(page) &&
+-	       (PageOffline(page) || PageZsmalloc(page));
++	       (PageOffline(page) || PageZsmalloc(page) || PageMaliGpu(page));
+ }
+ 
+ static __always_inline int PageAnonExclusive(const struct page *page)
+--- a/mm/migrate.c	2026-06-27 23:18:42.092130640 +0100
++++ b/mm/migrate.c	2026-06-27 23:22:07.511349249 +0100
+@@ -53,6 +53,7 @@
+ 
+ static const struct movable_operations *offline_movable_ops;
+ static const struct movable_operations *zsmalloc_movable_ops;
++static const struct movable_operations *mali_gpu_movable_ops;
+ 
+ int set_movable_ops(const struct movable_operations *ops, enum pagetype type)
+ {
+@@ -71,6 +72,11 @@
+ 			return -EBUSY;
+ 		zsmalloc_movable_ops = ops;
+ 		break;
++	case PGTY_mali_gpu:
++		if (mali_gpu_movable_ops && ops)
++			return -EBUSY;
++		mali_gpu_movable_ops = ops;
++		break;
+ 	default:
+ 		return -EINVAL;
+ 	}
+@@ -92,6 +98,8 @@
+ 		return offline_movable_ops;
+ 	if (PageZsmalloc(page))
+ 		return zsmalloc_movable_ops;
++	if (PageMaliGpu(page))
++		return mali_gpu_movable_ops;
+ 
+ 	return NULL;
+ }

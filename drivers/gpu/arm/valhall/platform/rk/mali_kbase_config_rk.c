@@ -507,6 +507,7 @@ static void kbase_platform_rk_remove_sysfs_files(struct device *dev)
 	device_remove_file(dev, &dev_attr_utilisation);
 }
 
+#if IS_ENABLED(CONFIG_ROCKCHIP_OPP) /* vendor OPP-select helpers; mainline path is below */
 static int rk3576_gpu_set_read_margin(struct device *dev,
 				      struct rockchip_opp_info *opp_info,
 				      u32 rm)
@@ -668,20 +669,33 @@ static const struct of_device_id rockchip_mali_of_match[] = {
 	{},
 };
 
+#endif /* CONFIG_ROCKCHIP_OPP -- end of vendor OPP-select helpers */
+
 int kbase_platform_rk_init_opp_table(struct kbase_device *kbdev)
 {
+#if IS_ENABLED(CONFIG_ROCKCHIP_OPP)
 	struct rockchip_opp_info *info = &kbdev->opp_info;
 
 	info->data = &rockchip_gpu_opp_data;
 	rockchip_get_opp_data(rockchip_mali_of_match, &kbdev->opp_info);
 
-	return rockchip_init_opp_table(kbdev->dev, &kbdev->opp_info,
-				       "clk_mali", "mali");
+	return rockchip_init_opp_table(kbdev->dev, &kbdev->opp_info, "clk_mali", "mali");
+#else
+	/* mali-dkms: mainline kernels have no Rockchip OPP-select BSP (the helpers
+	 * above compile out). Load the standard operating-points-v2 table from DT so
+	 * kbase devfreq gets a frequency table and DVFS works.
+	 */
+	return dev_pm_opp_of_add_table(kbdev->dev);
+#endif
 }
 
 void kbase_platform_rk_uninit_opp_table(struct kbase_device *kbdev)
 {
+#if IS_ENABLED(CONFIG_ROCKCHIP_OPP)
 	rockchip_uninit_opp_table(kbdev->dev, &kbdev->opp_info);
+#else
+	dev_pm_opp_of_remove_table(kbdev->dev);
+#endif
 }
 
 int kbase_platform_rk_enable_regulator(struct kbase_device *kbdev)

@@ -6186,6 +6186,12 @@ static const struct of_device_id kbase_dt_ids[] = { { .compatible = "arm,malit6x
 						    { .compatible = "arm,mali-midgard" },
 						    { .compatible = "arm,mali-bifrost" },
 						    { .compatible = "arm,mali-valhall" },
+						    /* mali-dkms: also bind the mainline RK3588 GPU node, which
+						     * advertises these rather than the vendor "arm,mali-valhall".
+						     * Blacklist panthor so only kbase claims the device.
+						     */
+						    { .compatible = "arm,mali-valhall-csf" },
+						    { .compatible = "rockchip,rk3588-mali" },
 						    { /* sentinel */ } };
 MODULE_DEVICE_TABLE(of, kbase_dt_ids);
 #endif
@@ -6240,6 +6246,7 @@ module_init(kbase_driver_init);
 module_exit(kbase_driver_exit);
 #endif
 MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("Mali-Valhall (CSF) GPU kernel driver");
 MODULE_VERSION(MALI_RELEASE_NAME " (UK version " __stringify(BASE_UK_VERSION_MAJOR) "." __stringify(
 	BASE_UK_VERSION_MINOR) ")");
 MODULE_SOFTDEP("pre: memory_group_manager");

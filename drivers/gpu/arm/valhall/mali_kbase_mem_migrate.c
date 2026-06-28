@@ -742,6 +742,30 @@ void kbase_mem_migrate_init(struct kbase_device *kbdev)
 			static_branch_inc(&page_migration_static_key);
 	}
 
+#if (KERNEL_VERSION(6, 17, 0) <= LINUX_VERSION_CODE)
+#if KBASE_PAGE_MIGRATION_SUPPORTED
+	/* Kernel carries the mali-dkms PGTY_mali_gpu patch: register our
+	 * movable_operations against that page type so the kernel can migrate GPU
+	 * pages.
+	 */
+	if (kbase_is_page_migration_enabled() &&
+	    set_movable_ops(&movable_ops, PGTY_mali_gpu)) {
+		dev_warn(kbdev->dev, "set_movable_ops() failed; disabling page migration.");
+		static_branch_dec(&page_migration_static_key);
+	}
+#else
+	/* The per-page __SetPageMovable() API is gone (6.17+) and this kernel lacks
+	 * the PGTY_mali_gpu patch, so the movable markers are no-ops. Force page
+	 * migration off so kbase's state stays consistent rather than tracking
+	 * "movable" pages the kernel will never migrate.
+	 */
+	if (kbase_is_page_migration_enabled()) {
+		dev_info(kbdev->dev, "Page migration unsupported on this kernel; disabling.");
+		static_branch_dec(&page_migration_static_key);
+	}
+#endif
+#endif
+
 	spin_lock_init(&mem_migrate->free_pages_lock);
 	INIT_LIST_HEAD(&mem_migrate->free_pages_list);
 
@@ -753,6 +777,11 @@ void kbase_mem_migrate_init(struct kbase_device *kbdev)
 void kbase_mem_migrate_term(struct kbase_device *kbdev)
 {
 	struct kbase_mem_migrate *mem_migrate = &kbdev->mem_migrate;
+
+#if (KERNEL_VERSION(6, 17, 0) <= LINUX_VERSION_CODE) && KBASE_PAGE_MIGRATION_SUPPORTED
+	/* Unregister the movable_operations for our PGTY_mali_gpu page type. */
+	set_movable_ops(NULL, PGTY_mali_gpu);
+#endif
 
 	if (mem_migrate->free_pages_workq)
 		destroy_workqueue(mem_migrate->free_pages_workq);

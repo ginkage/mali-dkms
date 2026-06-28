@@ -418,11 +418,92 @@ static inline unsigned long
 kbase_mm_get_unmapped_area_helper(struct mm_struct *mm, struct file *filp, unsigned long addr,
 				  unsigned long len, unsigned long pgoff, unsigned long flags)
 {
-#if (KERNEL_VERSION(6, 10, 0) <= LINUX_VERSION_CODE)
+#if (KERNEL_VERSION(6, 19, 0) <= LINUX_VERSION_CODE)
+	/* mm_get_unmapped_area() dropped its mm parameter in 6.19; it operates on
+	 * current->mm, which is the mm kbase's mmap path is working on anyway.
+	 */
+	(void)mm;
+	return mm_get_unmapped_area(filp, addr, len, pgoff, flags);
+#elif (KERNEL_VERSION(6, 10, 0) <= LINUX_VERSION_CODE)
 	return mm_get_unmapped_area(mm, filp, addr, len, pgoff, flags);
 #else
 	return mm->get_unmapped_area(filp, addr, len, pgoff, flags);
 #endif
 }
+
+#if (KERNEL_VERSION(6, 17, 0) <= LINUX_VERSION_CODE)
+/* The per-page __SetPageMovable()/__ClearPageMovable() API was removed in 6.17 in
+ * favour of a page-type-based scheme (set_movable_ops(ops, enum pagetype)). If the
+ * kernel carries the mali-dkms PGTY_mali_gpu patch (see kernel-patches/), wire the
+ * markers onto it for real GPU page migration; otherwise compile them to no-ops and
+ * the driver disables migration at init (kbase_mem_migrate_init()) so kbase's state
+ * stays consistent. Page migration is only a memory-compaction optimisation, so the
+ * no-op path is functionally harmless.
+ */
+#include <linux/page-flags.h>
+#include <linux/migrate.h>
+#ifdef PGTY_mali_gpu
+#define KBASE_PAGE_MIGRATION_SUPPORTED 1
+/* Mirror how in-tree movable types (e.g. zsmalloc) mark a page: set the movable_ops
+ * flag and the page type. The movable_operations are registered once via
+ * set_movable_ops() in kbase_mem_migrate_init(), so the per-call ops are unused.
+ */
+#define __SetPageMovable(page, ops) \
+	do { (void)(ops); SetPageMovableOps(page); __SetPageMaliGpu(page); } while (0)
+#define __ClearPageMovable(page) __ClearPageMaliGpu(page)
+#else
+#define KBASE_PAGE_MIGRATION_SUPPORTED 0
+#define __SetPageMovable(page, ops) do { (void)(page); (void)(ops); } while (0)
+#define __ClearPageMovable(page) do { (void)(page); } while (0)
+#endif
+#endif
+
+#if (KERNEL_VERSION(7, 0, 0) <= LINUX_VERSION_CODE)
+#include <linux/hrtimer.h>
+/* hrtimer_init() was removed in favour of hrtimer_setup(), which takes the
+ * callback up front and WARNs on a NULL one. kbase initialises the timer and
+ * assigns .function on the following line, so map hrtimer_init() onto
+ * hrtimer_setup() with a harmless placeholder that the assignment overwrites.
+ */
+static inline enum hrtimer_restart kbase_hrtimer_setup_noop(struct hrtimer *timer)
+{
+	(void)timer;
+	return HRTIMER_NORESTART;
+}
+#define hrtimer_init(timer, clock_id, mode) \
+	hrtimer_setup((timer), kbase_hrtimer_setup_noop, (clock_id), (mode))
+
+/* del_timer()/del_timer_sync() were removed; timer_delete()/timer_delete_sync()
+ * are the identical replacements (same signature and semantics). */
+#define del_timer(timer)      timer_delete(timer)
+#define del_timer_sync(timer) timer_delete_sync(timer)
+#endif
+
+#if (KERNEL_VERSION(7, 0, 0) <= LINUX_VERSION_CODE)
+#include <linux/dma-fence.h>
+/* dma_fence_signal() became void; provide an int-returning shim (0 = success) so
+ * existing `ret = dma_fence_signal(...)` call sites keep compiling. Each shim is
+ * defined before the shadowing macro so it still resolves to the real function.
+ */
+static inline int kbase_dma_fence_signal_compat(struct dma_fence *fence)
+{
+	dma_fence_signal(fence);
+	return 0;
+}
+#define dma_fence_signal(fence) kbase_dma_fence_signal_compat(fence)
+
+#include <linux/mm_types.h>
+#include <linux/shmem_fs.h>
+/* shmem_file_setup()'s flags argument became the typed vma_flags_t; wrap it so
+ * call sites can keep passing a legacy VM_* word.
+ */
+static inline struct file *kbase_shmem_file_setup_compat(const char *name, loff_t size,
+							 unsigned long flags)
+{
+	return shmem_file_setup(name, size, legacy_to_vma_flags(flags));
+}
+#define shmem_file_setup(name, size, flags) \
+	kbase_shmem_file_setup_compat((name), (size), (flags))
+#endif
 
 #endif /* _VERSION_COMPAT_DEFS_H_ */

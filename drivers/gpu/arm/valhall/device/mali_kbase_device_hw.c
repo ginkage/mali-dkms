@@ -284,10 +284,24 @@ static inline bool get_cache_clean_flag(struct kbase_device *kbdev)
 
 void kbase_gpu_wait_cache_clean(struct kbase_device *kbdev)
 {
-	while (get_cache_clean_flag(kbdev)) {
-		if (wait_event_interruptible(kbdev->cache_clean_wait,
-					     !kbdev->cache_clean_in_progress))
-			dev_warn(kbdev->dev, "Wait for cache clean is interrupted");
+	/* Bound the wait: the vendor code waited forever, hanging the calling thread
+	 * if the cache-clean IRQ never arrives (e.g. after a GPU fault). Time out
+	 * after 2s and trigger a GPU reset to recover. (Adopted from the Sky1 cix
+	 * port; no hwaccess_lock is held here, so use the non-_locked reset API.)
+	 */
+	long remaining = (long)msecs_to_jiffies(2000);
+
+	while (remaining && get_cache_clean_flag(kbdev)) {
+		remaining = wait_event_timeout(kbdev->cache_clean_wait,
+					       !kbdev->cache_clean_in_progress, remaining);
+	}
+
+	if (!remaining) {
+		dev_err(kbdev->dev,
+			"Cache clean timed out (2s). Triggering GPU reset to recover.");
+
+		if (kbase_prepare_to_reset_gpu(kbdev, RESET_FLAGS_HWC_UNRECOVERABLE_ERROR))
+			kbase_reset_gpu(kbdev);
 	}
 }
 

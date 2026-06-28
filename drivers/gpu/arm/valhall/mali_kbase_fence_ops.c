@@ -54,7 +54,7 @@ static bool kbase_fence_enable_signaling(struct dma_fence *fence)
 	return true;
 }
 
-static void kbase_fence_fence_value_str(struct dma_fence *fence, char *str, int size)
+static __maybe_unused void kbase_fence_fence_value_str(struct dma_fence *fence, char *str, int size)
 {
 	char *format;
 
@@ -81,7 +81,9 @@ const struct dma_fence_ops kbase_fence_ops = { .wait = dma_fence_default_wait,
 					       .get_driver_name = kbase_fence_get_driver_name,
 					       .get_timeline_name = kbase_fence_get_timeline_name,
 					       .enable_signaling = kbase_fence_enable_signaling,
+#if (KERNEL_VERSION(7, 0, 0) > LINUX_VERSION_CODE)
 					       .fence_value_str = kbase_fence_fence_value_str,
+#endif
 					       .release = kbase_fence_release };
 #else
 extern const struct dma_fence_ops kbase_fence_ops; /* silence checker warning */
@@ -89,7 +91,10 @@ const struct dma_fence_ops kbase_fence_ops = { .wait = dma_fence_default_wait,
 					       .get_driver_name = kbase_fence_get_driver_name,
 					       .get_timeline_name = kbase_fence_get_timeline_name,
 					       .enable_signaling = kbase_fence_enable_signaling,
-					       .fence_value_str = kbase_fence_fence_value_str };
+#if (KERNEL_VERSION(7, 0, 0) > LINUX_VERSION_CODE)
+					       .fence_value_str = kbase_fence_fence_value_str
+#endif
+					     };
 #endif /* MALI_USE_CSF */
 
 KBASE_EXPORT_TEST_API(kbase_fence_ops);

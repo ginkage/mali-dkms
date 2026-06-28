@@ -294,7 +294,12 @@ ifeq ($(CONFIG_MALI_KCOV),y)
 endif
 
 all:
-	$(MAKE) -C $(KDIR) M=$(M) $(MAKE_ARGS) EXTRA_CFLAGS="$(EXTRA_CFLAGS)" KBUILD_EXTRA_SYMBOLS="$(EXTRA_SYMBOLS)" modules
+	# NOTE(mali-dkms port): kernels >= 6.x dropped kbuild's EXTRA_CFLAGS support,
+	# which silently discarded every -DCONFIG_MALI_VALHALL_* define computed above.
+	# Pass them via KCFLAGS (appended to KBUILD_CFLAGS, honored old and new), and
+	# fold in any inherited KCFLAGS (e.g. -DCONFIG_MALI_CSF_INCLUDE_FW from the
+	# top-level Makefile).
+	$(MAKE) -C $(KDIR) M=$(M) $(MAKE_ARGS) KCFLAGS="$(KCFLAGS) $(EXTRA_CFLAGS)" KBUILD_EXTRA_SYMBOLS="$(EXTRA_SYMBOLS)" modules
 
 modules_install:
 	$(MAKE) -C $(KDIR) M=$(M) $(MAKE_ARGS) modules_install
