@@ -1,0 +1,262 @@
+dma-buf: system_heap: add a system-uncached heap (+ dma_heap_get_dev)
+
+Re-add the dma-buf "system-uncached" heap that mainline dropped (~5.13). The
+Rockchip libmali userspace and its WSI layer allocate write-combine/uncached
+buffers from /dev/dma_heap/system-uncached; without it they fall back to cached
+system memory, which corrupts on the non-coherent Mali GPU.
+
+This is the Rockchip vendor mechanism (Simon Xue, commits a2ded8cab4d6 /
+43fb28d9a879 / 1a44a281070e) adapted to mainline 7.x:
+ - dma-heap: store the per-heap struct device and add dma_heap_get_dev(), which
+   the uncached path needs for the one-time alloc-time cache flush.
+ - system_heap: add an "uncached" priv flag alongside the existing cc_shared
+   one (DMA_ATTR_SKIP_CPU_SYNC on map/unmap, pgprot_writecombine for mmap/vmap,
+   skip the begin/end_cpu_access syncs, flush the freshly-zeroed pages once at
+   allocation), and register the "system-uncached" heap.
+
+The vendor's begin/end_cpu_access_partial ops and the kernel-space
+dma_heap_find/dma_heap_buffer_alloc helpers are intentionally NOT ported: the
+libmali userspace uses neither (only the standard full DMA_BUF_IOCTL_SYNC).
+
+Carried by mali-dkms (Rockchip Mali-Valhall DKMS). Not for upstream.
+---
+--- a/include/linux/dma-heap.h	2026-06-28 20:38:00.162345474 +0100
++++ b/include/linux/dma-heap.h	2026-06-28 20:38:00.217882944 +0100
+@@ -44,6 +44,8 @@
+ 
+ const char *dma_heap_get_name(struct dma_heap *heap);
+ 
++struct device *dma_heap_get_dev(struct dma_heap *heap);
++
+ struct dma_heap *dma_heap_add(const struct dma_heap_export_info *exp_info);
+ 
+ extern bool mem_accounting;
+--- a/drivers/dma-buf/dma-heap.c	2026-06-28 20:38:00.165277233 +0100
++++ b/drivers/dma-buf/dma-heap.c	2026-06-28 20:38:00.217967233 +0100
+@@ -39,6 +39,7 @@
+ 	const struct dma_heap_ops *ops;
+ 	void *priv;
+ 	dev_t heap_devt;
++	struct device *heap_dev;
+ 	struct list_head list;
+ 	struct cdev heap_cdev;
+ };
+@@ -224,6 +225,20 @@
+ EXPORT_SYMBOL_NS_GPL(dma_heap_get_name, "DMA_BUF_HEAP");
+ 
+ /**
++ * dma_heap_get_dev - get the struct device backing a heap
++ * @heap: DMA-Heap to retrieve the device of
++ *
++ * Returns:
++ * The struct device created for this heap (used e.g. for cache
++ * maintenance on the heap's own buffers).
++ */
++struct device *dma_heap_get_dev(struct dma_heap *heap)
++{
++	return heap->heap_dev;
++}
++EXPORT_SYMBOL_NS_GPL(dma_heap_get_dev, "DMA_BUF_HEAP");
++
++/**
+  * dma_heap_add - adds a heap to dmabuf heaps
+  * @exp_info: information needed to register this heap
+  */
+@@ -282,6 +297,7 @@
+ 		err_ret = ERR_CAST(dev_ret);
+ 		goto err2;
+ 	}
++	heap->heap_dev = dev_ret;
+ 
+ 	mutex_lock(&heap_list_lock);
+ 	/* check the name is unique */
+--- a/drivers/dma-buf/heaps/system_heap.c	2026-06-28 20:38:00.168128494 +0100
++++ b/drivers/dma-buf/heaps/system_heap.c	2026-06-28 20:38:00.218193852 +0100
+@@ -27,6 +27,7 @@
+ 
+ struct system_heap_priv {
+ 	bool cc_shared;
++	bool uncached;
+ };
+ 
+ struct system_heap_buffer {
+@@ -38,6 +39,7 @@
+ 	int vmap_cnt;
+ 	void *vaddr;
+ 	bool cc_shared;
++	bool uncached;
+ };
+ 
+ struct dma_heap_attachment {
+@@ -46,6 +48,7 @@
+ 	struct list_head list;
+ 	bool mapped;
+ 	bool cc_shared;
++	bool uncached;
+ };
+ 
+ #define LOW_ORDER_GFP (GFP_HIGHUSER | __GFP_ZERO)
+@@ -129,6 +132,7 @@
+ 	INIT_LIST_HEAD(&a->list);
+ 	a->mapped = false;
+ 	a->cc_shared = buffer->cc_shared;
++	a->uncached = buffer->uncached;
+ 
+ 	attachment->priv = a;
+ 
+@@ -162,6 +166,8 @@
+ 	int ret;
+ 
+ 	attrs = a->cc_shared ? DMA_ATTR_CC_SHARED : 0;
++	if (a->uncached)
++		attrs |= DMA_ATTR_SKIP_CPU_SYNC;
+ 	ret = dma_map_sgtable(attachment->dev, table, direction, attrs);
+ 	if (ret)
+ 		return ERR_PTR(ret);
+@@ -175,9 +181,10 @@
+ 				      enum dma_data_direction direction)
+ {
+ 	struct dma_heap_attachment *a = attachment->priv;
++	unsigned long attrs = a->uncached ? DMA_ATTR_SKIP_CPU_SYNC : 0;
+ 
+ 	a->mapped = false;
+-	dma_unmap_sgtable(attachment->dev, table, direction, 0);
++	dma_unmap_sgtable(attachment->dev, table, direction, attrs);
+ }
+ 
+ static int system_heap_dma_buf_begin_cpu_access(struct dma_buf *dmabuf,
+@@ -191,10 +198,12 @@
+ 	if (buffer->vmap_cnt)
+ 		invalidate_kernel_vmap_range(buffer->vaddr, buffer->len);
+ 
+-	list_for_each_entry(a, &buffer->attachments, list) {
+-		if (!a->mapped)
+-			continue;
+-		dma_sync_sgtable_for_cpu(a->dev, &a->table, direction);
++	if (!buffer->uncached) {
++		list_for_each_entry(a, &buffer->attachments, list) {
++			if (!a->mapped)
++				continue;
++			dma_sync_sgtable_for_cpu(a->dev, &a->table, direction);
++		}
+ 	}
+ 	mutex_unlock(&buffer->lock);
+ 
+@@ -212,10 +221,12 @@
+ 	if (buffer->vmap_cnt)
+ 		flush_kernel_vmap_range(buffer->vaddr, buffer->len);
+ 
+-	list_for_each_entry(a, &buffer->attachments, list) {
+-		if (!a->mapped)
+-			continue;
+-		dma_sync_sgtable_for_device(a->dev, &a->table, direction);
++	if (!buffer->uncached) {
++		list_for_each_entry(a, &buffer->attachments, list) {
++			if (!a->mapped)
++				continue;
++			dma_sync_sgtable_for_device(a->dev, &a->table, direction);
++		}
+ 	}
+ 	mutex_unlock(&buffer->lock);
+ 
+@@ -235,6 +246,8 @@
+ 	prot = vma->vm_page_prot;
+ 	if (buffer->cc_shared)
+ 		prot = pgprot_decrypted(prot);
++	if (buffer->uncached)
++		prot = pgprot_writecombine(prot);
+ 
+ 	for_each_sgtable_sg(table, sg, i) {
+ 		unsigned long n = sg->length >> PAGE_SHIFT;
+@@ -284,6 +297,8 @@
+ 	prot = PAGE_KERNEL;
+ 	if (buffer->cc_shared)
+ 		prot = pgprot_decrypted(prot);
++	if (buffer->uncached)
++		prot = pgprot_writecombine(prot);
+ 	vaddr = vmap(pages, npages, VM_MAP, prot);
+ 	vfree(pages);
+ 
+@@ -406,6 +421,7 @@
+ 	unsigned int max_order = orders[0];
+ 	struct system_heap_priv *priv = dma_heap_get_drvdata(heap);
+ 	bool cc_shared = priv->cc_shared;
++	bool uncached = priv->uncached;
+ 	struct dma_buf *dmabuf;
+ 	struct sg_table *table;
+ 	struct scatterlist *sg;
+@@ -422,6 +438,7 @@
+ 	buffer->heap = heap;
+ 	buffer->len = len;
+ 	buffer->cc_shared = cc_shared;
++	buffer->uncached = uncached;
+ 
+ 	INIT_LIST_HEAD(&pages);
+ 	i = 0;
+@@ -475,6 +492,18 @@
+ 		ret = PTR_ERR(dmabuf);
+ 		goto free_pages;
+ 	}
++
++	/*
++	 * For uncached buffers, flush the CPU cache once now: the __GFP_ZERO
++	 * pages were zeroed by the CPU and are likely cached, so map (which
++	 * implicitly flushes) and immediately unmap on the heap's own device to
++	 * avoid stale cache lines corrupting later uncached access.
++	 */
++	if (uncached) {
++		dma_map_sgtable(dma_heap_get_dev(heap), table, DMA_BIDIRECTIONAL, 0);
++		dma_unmap_sgtable(dma_heap_get_dev(heap), table, DMA_BIDIRECTIONAL, 0);
++	}
++
+ 	return dmabuf;
+ 
+ free_pages:
+@@ -511,10 +540,30 @@
+ 	.cc_shared = true,
+ };
+ 
++static struct system_heap_priv system_heap_uncached_priv = {
++	.cc_shared = false,
++	.uncached = true,
++};
++
++/* Used until system_heap_create() sets the heap device's DMA mask. */
++static struct dma_buf *system_uncached_heap_not_initialized(struct dma_heap *heap,
++							    unsigned long len,
++							    u32 fd_flags,
++							    u64 heap_flags)
++{
++	return ERR_PTR(-EBUSY);
++}
++
++static struct dma_heap_ops system_uncached_heap_ops = {
++	/* swapped to system_heap_allocate() once the dma mask is set */
++	.allocate = system_uncached_heap_not_initialized,
++};
++
+ static int __init system_heap_create(void)
+ {
+ 	struct dma_heap_export_info exp_info;
+ 	struct dma_heap *sys_heap;
++	struct dma_heap *sys_uncached_heap;
+ 
+ 	exp_info.name = "system";
+ 	exp_info.ops = &system_heap_ops;
+@@ -524,6 +573,16 @@
+ 	if (IS_ERR(sys_heap))
+ 		return PTR_ERR(sys_heap);
+ 
++	exp_info.name = "system-uncached";
++	exp_info.ops = &system_uncached_heap_ops;
++	exp_info.priv = &system_heap_uncached_priv;
++	sys_uncached_heap = dma_heap_add(&exp_info);
++	if (IS_ERR(sys_uncached_heap))
++		return PTR_ERR(sys_uncached_heap);
++	dma_coerce_mask_and_coherent(dma_heap_get_dev(sys_uncached_heap), DMA_BIT_MASK(64));
++	mb(); /* publish the dma mask before accepting allocations */
++	system_uncached_heap_ops.allocate = system_heap_allocate;
++
+ 	if (IS_ENABLED(CONFIG_HIGHMEM) ||
+ 	    !cc_platform_has(CC_ATTR_MEM_ENCRYPT))
+ 		return 0;

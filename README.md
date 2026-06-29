@@ -135,7 +135,9 @@ The module is produced at `drivers/gpu/arm/valhall/valhall_kbase.ko`.
 
 On a mainline kernel the in-tree **panthor** DRM driver claims the Mali GPU
 (`fb000000.gpu`, providing `renderD128`). The proprietary libmali stack needs
-`valhall_kbase` instead, so panthor must be displaced. Binding and probe were reconciled
+`valhall_kbase` instead, so panthor must be displaced — which also removes that render node,
+so the libmali/Zink/XWayland userspace needs it back from `rockchip-drm` (see *The userspace
+stack* below). Binding and probe were reconciled
 with the mainline DT node in advance — **no DT overlay is needed**:
 
 1. **Binding** — added `arm,mali-valhall-csf` and `rockchip,rk3588-mali` to `kbase_dt_ids[]`
@@ -178,6 +180,46 @@ sudo modprobe valhall_kbase
 blacklist line. With a matching `compatible` in `kbase_dt_ids[]`, the DKMS-installed module
 auto-loads via modalias at boot and binds the GPU. (`dkms.conf`'s `AUTOINSTALL=yes` only
 rebuilds the module on kernel upgrades; it does not control loading.)
+
+## The userspace stack: render node + uncached heap (kernel patches)
+
+`valhall_kbase` is only the GPU **compute** driver (`/dev/mali0`). The full Rockchip libmali
+userspace — native GLES/Vulkan, plus Mesa/**Zink** GL-on-Vulkan and **XWayland** — needs two
+more things from the kernel that mainline (unlike the Rockchip vendor kernel) stopped providing
+once panthor is displaced. Both are carried here as kernel patches; apply them to the target
+kernel source and rebuild.
+
+**Render node — `0002-drm-rockchip-expose-render-node.patch`.** On Rockchip the DRM **render
+node** (`/dev/dri/renderD128`) is what Mesa/Zink and XWayland's glamor open for their GBM/winsys
+(buffer handles + dma-buf PRIME); the actual GPU work still goes to libmali (`/dev/mali0`) /
+libMaliVulkan. On mainline that node is provided by **panthor**, so blacklisting panthor to run
+`valhall_kbase` removes it and Mesa/Zink/XWayland fail with *"Failed to make EGL context current
+with GL"* (the libmali-native GLES desktop keeps working — it needs no DRM render node). The
+Rockchip vendor kernel instead exposes the render node from the **display** driver — its
+`rockchip-drm` carries `DRIVER_RENDER`, mainline's is display-only — so the patch re-adds that
+one flag. Nothing more is needed: libmali allocates through dma-heap, not the vendor
+`ROCKCHIP_GEM_CREATE` ioctl. `CONFIG_DRM_ROCKCHIP=m`, so this is testable by rebuilding just
+`rockchipdrm.ko` — no full kernel build.
+
+**Uncached dma-heap — `0003-dma-buf-system-heap-add-system-uncached.patch`.** libmali and its WSI
+layer allocate write-combine buffers from `/dev/dma_heap/system-uncached` (needed on the
+non-coherent GPU — cached fallback corrupts). Mainline removed that heap (~5.13). The patch
+re-adds it, ported from the Rockchip vendor mechanism (Simon Xue, commits `a2ded8cab4d6` /
+`43fb28d9a879` / `1a44a281070e`) onto mainline's `priv`-based `system_heap.c` (an `uncached` flag
+beside the existing `cc_shared` one), plus the small `dma_heap_get_dev()` accessor the alloc-time
+cache flush needs. The vendor's `*_partial` cpu-access ops and kernel-space
+`dma_heap_find`/`dma_heap_buffer_alloc` helpers are intentionally omitted — libmali uses neither
+(only the standard full `DMA_BUF_IOCTL_SYNC`). Built-in (`=y`), so this one needs a full kernel
+rebuild.
+
+The result is the split the Rockchip 6.1 vendor kernel uses, reproduced on mainline: **kbase**
+drives the GPU (`/dev/mali0`), patched **rockchip-drm** hands out the render node for the
+Zink/Mesa/XWayland winsys, **libmali** does GLES/Vulkan plus the uncached heap, and **Zink**
+layers GL on top of libMaliVulkan.
+
+**Status — confirmed on hardware.** On a `7.1.2-edge-rockchip64` build with 0002 + 0003
+applied, `/dev/dri/renderD128` (`rockchip-drm`) and `/dev/dma_heap/system-uncached` are both
+present, and XWayland, Vulkan, and Zink-on-libMaliVulkan all run on `valhall_kbase`.
 
 ## Important: vendor kernels with Mali built in
 

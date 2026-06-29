@@ -1,0 +1,27 @@
+drm/rockchip: expose a render node (DRIVER_RENDER)
+
+Mainline's rockchip-drm is display-only; the GPU render node comes from panthor.
+When the proprietary Mali "kbase" stack is used instead of panthor (kbase owns
+the GPU, panthor is blacklisted), there is no render node at all, so Mesa/zink
+(e.g. XWayland's glamor) has no GBM/winsys device and fails with
+"Failed to make EGL context current with GL".
+
+The Rockchip vendor kernel ships rockchip-drm with DRIVER_RENDER for exactly
+this reason. The current libmali userspace allocates buffers via dma-heap (not
+the vendor ROCKCHIP_GEM_CREATE ioctl), so only the render node itself is needed:
+clients allocate via Vulkan/dma-heap and use the node for the device handle and
+dma-buf PRIME, which rockchip-drm already supports. Just advertise DRIVER_RENDER.
+
+Carried by mali-dkms (Rockchip Mali-Valhall DKMS). Not for upstream.
+---
+--- a/drivers/gpu/drm/rockchip/rockchip_drm_drv.c	2026-06-28 20:15:19.206490294 +0100
++++ b/drivers/gpu/drm/rockchip/rockchip_drm_drv.c	2026-06-28 20:15:19.243163823 +0100
+@@ -231,7 +231,7 @@
+ DEFINE_DRM_GEM_FOPS(rockchip_drm_driver_fops);
+ 
+ static const struct drm_driver rockchip_drm_driver = {
+-	.driver_features	= DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,
++	.driver_features	= DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC | DRIVER_RENDER,
+ 	.dumb_create		= rockchip_gem_dumb_create,
+ 	.gem_prime_import_sg_table	= rockchip_gem_prime_import_sg_table,
+ 	DRM_FBDEV_DMA_DRIVER_OPS,
