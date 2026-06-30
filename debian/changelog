@@ -1,0 +1,9 @@
+mali-valhall-g610 (1.0.0) unstable; urgency=medium
+
+  * Initial Debian packaging of the Rockchip Mali-Valhall (CSF) DKMS module.
+  * Builds valhall_kbase.ko (Mali-G610, platform rk, ARM DDK g29p1) on mainline
+    ARM64 kernels via DKMS, installed to /usr/src/mali-valhall-g610-g29p1.
+  * Ships the rockchip-drm render-node, system-uncached dma-heap, and optional
+    GPU page-migration kernel patches under kernel-patches/ (see README.md).
+
+ -- Ivan Podogov <ginkage.uk@gmail.com>  Tue, 30 Jun 2026 16:08:22 +0100

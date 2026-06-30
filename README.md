@@ -110,7 +110,31 @@ in-tree `zsmalloc` marks pages), and `kbase_mem_migrate_init()` registers the dr
 it falls back to the disabled no-op path automatically — the same DKMS sources build both
 ways, so no driver edits are needed either direction.
 
-## Install with DKMS
+## Install from the Debian package (recommended)
+
+A `.deb` is the easiest path. CI builds one on every push to `main`
+(`.github/workflows/build_and_release.yml`) and attaches it to a GitHub Release — download the
+latest, or build it yourself from this tree:
+
+```sh
+sudo apt-get install -y debhelper dh-dkms dkms devscripts
+debuild -us -uc -b            # → ../mali-valhall-g610-dkms_<version>_all.deb
+```
+
+Then install it; DKMS registers and builds the module automatically — for the running kernel
+now, and on every future kernel that has a matching `linux-headers-*` package:
+
+```sh
+sudo apt install ./mali-valhall-g610-dkms_*.deb
+```
+
+The package is `Architecture: all`: it ships *source* and the module is compiled on **your**
+machine at install time. It unpacks the tree to `/usr/src/mali-valhall-g610-g29p1/`, including
+`kernel-patches/` — those patch the kernel itself, so DKMS does **not** apply them (see *The
+userspace stack* and *Optional: GPU page migration*). Removing the package (`apt remove
+mali-valhall-g610-dkms`) runs `dkms remove` for you.
+
+## Install with DKMS (from the source tree)
 
 `dkms` looks for the tree under `/usr/src/<PACKAGE_NAME>-<PACKAGE_VERSION>`, which for this
 package is `mali-valhall-g610-g29p1`:

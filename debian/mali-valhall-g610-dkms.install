@@ -1,0 +1,7 @@
+Makefile        usr/src/mali-valhall-g610-g29p1/
+drivers         usr/src/mali-valhall-g610-g29p1/
+include         usr/src/mali-valhall-g610-g29p1/
+kernel-patches  usr/src/mali-valhall-g610-g29p1/
+Documentation   usr/src/mali-valhall-g610-g29p1/
+README.md       usr/src/mali-valhall-g610-g29p1/
+LICENSE         usr/src/mali-valhall-g610-g29p1/

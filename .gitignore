@@ -13,3 +13,15 @@
 .tmp_versions/
 .cache.mk
 modules.builtin*
+
+# Debian packaging build artifacts
+/debian/.debhelper/
+/debian/mali-valhall-g610-dkms/
+/debian/files
+/debian/debhelper-build-stamp
+/debian/*.substvars
+/debian/*.debhelper
+/debian/*.debhelper.log
+*.deb
+*.buildinfo
+*.changes

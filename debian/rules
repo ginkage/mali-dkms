@@ -1,0 +1,21 @@
+#!/usr/bin/make -f
+# Debian packaging for the Rockchip Mali-Valhall (CSF) DKMS module.
+#
+# This is a DKMS *source* package: valhall_kbase.ko is compiled on the target
+# machine at install time (by DKMS, against that kernel's headers), never at
+# package-build time. So the auto build/configure/install steps are disabled --
+# otherwise dh would invoke the top-level Makefile and try to compile the ARM
+# kernel module on the (x86, wrong-kernel) package builder and fail.
+#
+# dh_dkms (from dh-dkms, --with dkms) installs debian/<pkg>.dkms as
+# /usr/src/mali-valhall-g610-g29p1/dkms.conf and adds the dkms add/build/install
+# (postinst) and remove (prerm) maintainer scripts. The module source tree is
+# staged into /usr/src/... by debian/<pkg>.install (dh_install).
+
+%:
+	dh $@ --with dkms
+
+override_dh_auto_configure:
+override_dh_auto_build:
+override_dh_auto_test:
+override_dh_auto_install:

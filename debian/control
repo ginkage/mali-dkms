@@ -1,0 +1,27 @@
+Source: mali-valhall-g610
+Section: kernel
+Priority: optional
+Maintainer: Ivan Podogov <ginkage.uk@gmail.com>
+Build-Depends: debhelper-compat (= 13), dh-dkms
+Standards-Version: 4.6.2
+Homepage: https://github.com/ginkage/mali-dkms
+Rules-Requires-Root: no
+
+Package: mali-valhall-g610-dkms
+Architecture: all
+Depends: ${misc:Depends}
+Description: Rockchip Mali-Valhall (CSF) GPU kernel driver (valhall_kbase, DKMS)
+ Builds valhall_kbase.ko, the ARM Mali-Valhall "kbase" kernel module for the
+ Mali-G610 (CSF) GPU on Rockchip RK3588 (platform "rk", ARM DDK g29p1). The
+ rk35xx 6.1 vendor driver is ported to build and run on mainline ARM64 kernels
+ (developed against 7.1.2-edge-rockchip64); it drives /dev/mali0 for the
+ proprietary libmali userspace, displacing the in-tree panthor driver.
+ .
+ DKMS rebuilds the module for each installed kernel that has the matching
+ linux-headers package present.
+ .
+ Under /usr/src/mali-valhall-g610-g29p1/kernel-patches/ the package also ships
+ the kernel patches the libmali + Zink + XWayland userspace needs once panthor
+ is displaced -- a rockchip-drm render node and the system-uncached dma-heap --
+ plus an optional GPU page-migration patch. Those patch the kernel itself and
+ are therefore NOT applied by DKMS; see README.md for how to apply them.
