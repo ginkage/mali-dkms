@@ -19,3 +19,7 @@ override_dh_auto_configure:
 override_dh_auto_build:
 override_dh_auto_test:
 override_dh_auto_install:
+
+# Install debian/<pkg>.mali-dma-heap.udev as 60-mali-dma-heap.rules (not 60-<pkg>.rules).
+override_dh_installudev:
+	dh_installudev --name=mali-dma-heap

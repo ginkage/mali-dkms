@@ -458,6 +458,14 @@ kbase_mm_get_unmapped_area_helper(struct mm_struct *mm, struct file *filp, unsig
 #endif
 #endif
 
+#if (KERNEL_VERSION(6, 17, 0) > LINUX_VERSION_CODE)
+/* WQ_PERCPU (an enum, so no #ifndef) was added when workqueues began moving to
+ * unbound-by-default; alloc_workqueue() now WARNs if neither it nor WQ_UNBOUND is
+ * given. Per-CPU was the implicit behaviour before, so it is a no-op here.
+ */
+#define WQ_PERCPU 0
+#endif
+
 #if (KERNEL_VERSION(7, 0, 0) <= LINUX_VERSION_CODE)
 #include <linux/hrtimer.h>
 /* hrtimer_init() was removed in favour of hrtimer_setup(), which takes the

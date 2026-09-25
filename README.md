@@ -73,6 +73,7 @@ on top of `wakeup_source_register()`/`__pm_stay_awake()`.
 | `del_timer[_sync]()` → `timer_delete[_sync]()` | 6.15 | macros (both names) |
 | `dma_fence_ops.fence_value_str` removed | 6.16 | guarded out in `mali_kbase_fence_ops.c` |
 | `__Set/ClearPageMovable()` removed | 6.17 | no-op'd; page migration force-disabled at init |
+| `alloc_workqueue()` WARNs without `WQ_PERCPU`/`WQ_UNBOUND` | 6.17+ | `WQ_PERCPU` on the 6 implicitly per-CPU queues; defined as `0` pre-6.17 |
 | `dma_fence_signal()` became `void` | 7.x | int-returning shim (returns 0) |
 | `shmem_file_setup()` flags → `vma_flags_t` | 7.x | wrapper via `legacy_to_vma_flags()` |
 
@@ -244,6 +245,14 @@ layers GL on top of libMaliVulkan.
 **Status — confirmed on hardware.** On a `7.1.2-edge-rockchip64` build with 0002 + 0003
 applied, `/dev/dri/renderD128` (`rockchip-drm`) and `/dev/dma_heap/system-uncached` are both
 present, and XWayland, Vulkan, and Zink-on-libMaliVulkan all run on `valhall_kbase`.
+
+**dma-heap permissions.** Mainline creates `/dev/dma_heap/*` as `root:root 0600`. libmali
+cannot open the heap, so its `gbm_create_device()` fails with a misleading `ENOENT` and
+GNOME Shell/mutter exits with *"Failed to create gbm device: No such file or directory"*.
+The Debian package installs `/usr/lib/udev/rules.d/60-mali-dma-heap.rules` (from
+`debian/mali-valhall-g610-dkms.mali-dma-heap.udev`), which gives `system` and `system-uncached` to the
+`render` group plus the active seat user (`uaccess`). For a manual DKMS install, copy that
+file there and run `sudo udevadm trigger -s dma_heap`.
 
 ## Important: vendor kernels with Mali built in
 

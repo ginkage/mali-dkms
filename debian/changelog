@@ -1,3 +1,14 @@
+mali-valhall-g610 (1.0.1) unstable; urgency=medium
+
+  * Ship a udev rule opening /dev/dma_heap/{system,system-uncached} to the
+    render group and the active seat user. libmali allocates from these heaps;
+    with the default root-only 0600 nodes its gbm_create_device() fails with
+    ENOENT and GNOME Shell/mutter cannot start.
+  * Pass WQ_PERCPU to the six implicitly per-CPU workqueues, silencing the
+    alloc_workqueue() WARN on 6.17+ kernels (defined as 0 on older kernels).
+
+ -- Ivan Podogov <ginkage.uk@gmail.com>  Fri, 25 Sep 2026 23:59:00 +0100
+
 mali-valhall-g610 (1.0.0) unstable; urgency=medium
 
   * Initial Debian packaging of the Rockchip Mali-Valhall (CSF) DKMS module.
