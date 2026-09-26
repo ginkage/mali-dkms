@@ -1,4 +1,7 @@
-dma-buf: system_heap: add a system-uncached heap (+ dma_heap_get_dev)
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: John Doe <john.doe@somewhere.on.planet>
+Date: Fri, 25 Sep 2026 20:23:39 +0100
+Subject: dma-buf: system_heap: add a system-uncached heap (+ dma_heap_get_dev)
 
 Re-add the dma-buf "system-uncached" heap that mainline dropped (~5.13). The
 Rockchip libmali userspace and its WSI layer allocate write-combine/uncached
@@ -19,21 +22,21 @@ dma_heap_find/dma_heap_buffer_alloc helpers are intentionally NOT ported: the
 libmali userspace uses neither (only the standard full DMA_BUF_IOCTL_SYNC).
 
 Carried by mali-dkms (Rockchip Mali-Valhall DKMS). Not for upstream.
+
+Signed-off-by: John Doe <john.doe@somewhere.on.planet>
 ---
---- a/include/linux/dma-heap.h	2026-06-28 20:38:00.162345474 +0100
-+++ b/include/linux/dma-heap.h	2026-06-28 20:38:00.217882944 +0100
-@@ -44,6 +44,8 @@
- 
- const char *dma_heap_get_name(struct dma_heap *heap);
- 
-+struct device *dma_heap_get_dev(struct dma_heap *heap);
-+
- struct dma_heap *dma_heap_add(const struct dma_heap_export_info *exp_info);
- 
- extern bool mem_accounting;
---- a/drivers/dma-buf/dma-heap.c	2026-06-28 20:38:00.165277233 +0100
-+++ b/drivers/dma-buf/dma-heap.c	2026-06-28 20:38:00.217967233 +0100
-@@ -39,6 +39,7 @@
+ drivers/dma-buf/dma-heap.c          | 16 ++
+ drivers/dma-buf/heaps/system_heap.c | 77 ++++++++--
+ include/linux/dma-heap.h            |  2 +
+ 3 files changed, 86 insertions(+), 9 deletions(-)
+
+diff --git a/drivers/dma-buf/dma-heap.c b/drivers/dma-buf/dma-heap.c
+index 43c32fb28313..f3187dd296ef 100644
+--- a/drivers/dma-buf/dma-heap.c
++++ b/drivers/dma-buf/dma-heap.c
+@@ -37,10 +37,11 @@
+ struct dma_heap {
+ 	const char *name;
  	const struct dma_heap_ops *ops;
  	void *priv;
  	dev_t heap_devt;
@@ -41,10 +44,15 @@ Carried by mali-dkms (Rockchip Mali-Valhall DKMS). Not for upstream.
  	struct list_head list;
  	struct cdev heap_cdev;
  };
-@@ -224,6 +225,20 @@
+ 
+ static LIST_HEAD(heap_list);
+@@ -222,10 +223,24 @@ const char *dma_heap_get_name(struct dma_heap *heap)
+ {
+ 	return heap->name;
+ }
  EXPORT_SYMBOL_NS_GPL(dma_heap_get_name, "DMA_BUF_HEAP");
  
- /**
++/**
 + * dma_heap_get_dev - get the struct device backing a heap
 + * @heap: DMA-Heap to retrieve the device of
 + *
@@ -58,11 +66,14 @@ Carried by mali-dkms (Rockchip Mali-Valhall DKMS). Not for upstream.
 +}
 +EXPORT_SYMBOL_NS_GPL(dma_heap_get_dev, "DMA_BUF_HEAP");
 +
-+/**
+ /**
   * dma_heap_add - adds a heap to dmabuf heaps
   * @exp_info: information needed to register this heap
   */
-@@ -282,6 +297,7 @@
+ struct dma_heap *dma_heap_add(const struct dma_heap_export_info *exp_info)
+@@ -281,10 +296,11 @@ struct dma_heap *dma_heap_add(const struct dma_heap_export_info *exp_info)
+ 	if (IS_ERR(dev_ret)) {
+ 		pr_err("dma_heap: Unable to create device\n");
  		err_ret = ERR_CAST(dev_ret);
  		goto err2;
  	}
@@ -70,9 +81,15 @@ Carried by mali-dkms (Rockchip Mali-Valhall DKMS). Not for upstream.
  
  	mutex_lock(&heap_list_lock);
  	/* check the name is unique */
---- a/drivers/dma-buf/heaps/system_heap.c	2026-06-28 20:38:00.168128494 +0100
-+++ b/drivers/dma-buf/heaps/system_heap.c	2026-06-28 20:38:00.218193852 +0100
-@@ -27,6 +27,7 @@
+ 	list_for_each_entry(h, &heap_list, list) {
+ 		if (!strcmp(h->name, exp_info->name)) {
+diff --git a/drivers/dma-buf/heaps/system_heap.c b/drivers/dma-buf/heaps/system_heap.c
+index c8959eadc71d..489f3bb889d9 100644
+--- a/drivers/dma-buf/heaps/system_heap.c
++++ b/drivers/dma-buf/heaps/system_heap.c
+@@ -25,10 +25,11 @@
+ #include <linux/slab.h>
+ #include <linux/vmalloc.h>
  
  struct system_heap_priv {
  	bool cc_shared;
@@ -80,7 +97,11 @@ Carried by mali-dkms (Rockchip Mali-Valhall DKMS). Not for upstream.
  };
  
  struct system_heap_buffer {
-@@ -38,6 +39,7 @@
+ 	struct dma_heap *heap;
+ 	struct list_head attachments;
+@@ -36,18 +37,20 @@ struct system_heap_buffer {
+ 	unsigned long len;
+ 	struct sg_table sg_table;
  	int vmap_cnt;
  	void *vaddr;
  	bool cc_shared;
@@ -88,15 +109,20 @@ Carried by mali-dkms (Rockchip Mali-Valhall DKMS). Not for upstream.
  };
  
  struct dma_heap_attachment {
-@@ -46,6 +48,7 @@
+ 	struct device *dev;
+ 	struct sg_table table;
  	struct list_head list;
  	bool mapped;
  	bool cc_shared;
 +	bool uncached;
  };
  
- #define LOW_ORDER_GFP (GFP_HIGHUSER | __GFP_ZERO)
-@@ -129,6 +132,7 @@
+ #define cc_shared_buffer(b) (IS_ENABLED(CONFIG_DMABUF_HEAPS_SYSTEM_CC_SHARED) && \
+ 				(b)->cc_shared)
+ 
+@@ -130,10 +133,11 @@ static int system_heap_attach(struct dma_buf *dmabuf,
+ 
+ 	a->dev = attachment->dev;
  	INIT_LIST_HEAD(&a->list);
  	a->mapped = false;
  	a->cc_shared = buffer->cc_shared;
@@ -104,16 +130,24 @@ Carried by mali-dkms (Rockchip Mali-Valhall DKMS). Not for upstream.
  
  	attachment->priv = a;
  
-@@ -162,6 +166,8 @@
+ 	mutex_lock(&buffer->lock);
+ 	list_add(&a->list, &buffer->attachments);
+@@ -163,10 +167,12 @@ static struct sg_table *system_heap_map_dma_buf(struct dma_buf_attachment *attac
+ 	struct sg_table *table = &a->table;
+ 	unsigned long attrs;
  	int ret;
  
- 	attrs = a->cc_shared ? DMA_ATTR_CC_SHARED : 0;
+ 	attrs = cc_shared_buffer(a) ? DMA_ATTR_CC_SHARED : 0;
 +	if (a->uncached)
 +		attrs |= DMA_ATTR_SKIP_CPU_SYNC;
  	ret = dma_map_sgtable(attachment->dev, table, direction, attrs);
  	if (ret)
  		return ERR_PTR(ret);
-@@ -175,9 +181,10 @@
+ 
+ 	a->mapped = true;
+@@ -176,13 +182,14 @@ static struct sg_table *system_heap_map_dma_buf(struct dma_buf_attachment *attac
+ static void system_heap_unmap_dma_buf(struct dma_buf_attachment *attachment,
+ 				      struct sg_table *table,
  				      enum dma_data_direction direction)
  {
  	struct dma_heap_attachment *a = attachment->priv;
@@ -125,7 +159,11 @@ Carried by mali-dkms (Rockchip Mali-Valhall DKMS). Not for upstream.
  }
  
  static int system_heap_dma_buf_begin_cpu_access(struct dma_buf *dmabuf,
-@@ -191,10 +198,12 @@
+ 						enum dma_data_direction direction)
+ {
+@@ -192,14 +199,16 @@ static int system_heap_dma_buf_begin_cpu_access(struct dma_buf *dmabuf,
+ 	mutex_lock(&buffer->lock);
+ 
  	if (buffer->vmap_cnt)
  		invalidate_kernel_vmap_range(buffer->vaddr, buffer->len);
  
@@ -142,7 +180,11 @@ Carried by mali-dkms (Rockchip Mali-Valhall DKMS). Not for upstream.
  	}
  	mutex_unlock(&buffer->lock);
  
-@@ -212,10 +221,12 @@
+ 	return 0;
+ }
+@@ -213,14 +222,16 @@ static int system_heap_dma_buf_end_cpu_access(struct dma_buf *dmabuf,
+ 	mutex_lock(&buffer->lock);
+ 
  	if (buffer->vmap_cnt)
  		flush_kernel_vmap_range(buffer->vaddr, buffer->len);
  
@@ -159,25 +201,37 @@ Carried by mali-dkms (Rockchip Mali-Valhall DKMS). Not for upstream.
  	}
  	mutex_unlock(&buffer->lock);
  
-@@ -235,6 +246,8 @@
+ 	return 0;
+ }
+@@ -236,10 +247,12 @@ static int system_heap_mmap(struct dma_buf *dmabuf, struct vm_area_struct *vma)
+ 	int i, ret;
+ 
  	prot = vma->vm_page_prot;
- 	if (buffer->cc_shared)
+ 	if (cc_shared_buffer(buffer))
  		prot = pgprot_decrypted(prot);
 +	if (buffer->uncached)
 +		prot = pgprot_writecombine(prot);
  
  	for_each_sgtable_sg(table, sg, i) {
  		unsigned long n = sg->length >> PAGE_SHIFT;
-@@ -284,6 +297,8 @@
+ 
+ 		if (pgoff < n)
+@@ -285,10 +298,12 @@ static void *system_heap_do_vmap(struct system_heap_buffer *buffer)
+ 	}
+ 
  	prot = PAGE_KERNEL;
- 	if (buffer->cc_shared)
+ 	if (cc_shared_buffer(buffer))
  		prot = pgprot_decrypted(prot);
 +	if (buffer->uncached)
 +		prot = pgprot_writecombine(prot);
  	vaddr = vmap(pages, npages, VM_MAP, prot);
  	vfree(pages);
  
-@@ -406,6 +421,7 @@
+ 	if (!vaddr)
+ 		return ERR_PTR(-ENOMEM);
+@@ -407,10 +422,11 @@ static struct dma_buf *system_heap_allocate(struct dma_heap *heap,
+ 	DEFINE_DMA_BUF_EXPORT_INFO(exp_info);
+ 	unsigned long size_remaining = len;
  	unsigned int max_order = orders[0];
  	struct system_heap_priv *priv = dma_heap_get_drvdata(heap);
  	bool cc_shared = priv->cc_shared;
@@ -185,7 +239,11 @@ Carried by mali-dkms (Rockchip Mali-Valhall DKMS). Not for upstream.
  	struct dma_buf *dmabuf;
  	struct sg_table *table;
  	struct scatterlist *sg;
-@@ -422,6 +438,7 @@
+ 	struct list_head pages;
+ 	struct page *page, *tmp_page;
+@@ -423,10 +439,11 @@ static struct dma_buf *system_heap_allocate(struct dma_heap *heap,
+ 	INIT_LIST_HEAD(&buffer->attachments);
+ 	mutex_init(&buffer->lock);
  	buffer->heap = heap;
  	buffer->len = len;
  	buffer->cc_shared = cc_shared;
@@ -193,7 +251,11 @@ Carried by mali-dkms (Rockchip Mali-Valhall DKMS). Not for upstream.
  
  	INIT_LIST_HEAD(&pages);
  	i = 0;
-@@ -475,6 +492,18 @@
+ 	while (size_remaining > 0) {
+ 		/*
+@@ -476,10 +493,22 @@ static struct dma_buf *system_heap_allocate(struct dma_heap *heap,
+ 	dmabuf = dma_buf_export(&exp_info);
+ 	if (IS_ERR(dmabuf)) {
  		ret = PTR_ERR(dmabuf);
  		goto free_pages;
  	}
@@ -212,7 +274,11 @@ Carried by mali-dkms (Rockchip Mali-Valhall DKMS). Not for upstream.
  	return dmabuf;
  
  free_pages:
-@@ -511,10 +540,30 @@
+ 	for_each_sgtable_sg(table, sg, i) {
+ 		struct page *p = sg_page(sg);
+@@ -512,23 +541,53 @@ static struct system_heap_priv system_heap_priv = {
+ 
+ static struct system_heap_priv system_heap_cc_shared_priv = {
  	.cc_shared = true,
  };
  
@@ -243,7 +309,9 @@ Carried by mali-dkms (Rockchip Mali-Valhall DKMS). Not for upstream.
  
  	exp_info.name = "system";
  	exp_info.ops = &system_heap_ops;
-@@ -524,6 +573,16 @@
+ 	exp_info.priv = &system_heap_priv;
+ 
+ 	sys_heap = dma_heap_add(&exp_info);
  	if (IS_ERR(sys_heap))
  		return PTR_ERR(sys_heap);
  
@@ -258,5 +326,27 @@ Carried by mali-dkms (Rockchip Mali-Valhall DKMS). Not for upstream.
 +	system_uncached_heap_ops.allocate = system_heap_allocate;
 +
  	if (IS_ENABLED(CONFIG_HIGHMEM) ||
+ 	    !IS_ENABLED(CONFIG_DMABUF_HEAPS_SYSTEM_CC_SHARED) ||
  	    !cc_platform_has(CC_ATTR_MEM_ENCRYPT))
  		return 0;
+ 
+diff --git a/include/linux/dma-heap.h b/include/linux/dma-heap.h
+index 648328a64b27..c00b2fb2e3b2 100644
+--- a/include/linux/dma-heap.h
++++ b/include/linux/dma-heap.h
+@@ -42,10 +42,12 @@ struct dma_heap_export_info {
+ 
+ void *dma_heap_get_drvdata(struct dma_heap *heap);
+ 
+ const char *dma_heap_get_name(struct dma_heap *heap);
+ 
++struct device *dma_heap_get_dev(struct dma_heap *heap);
++
+ struct dma_heap *dma_heap_add(const struct dma_heap_export_info *exp_info);
+ 
+ extern bool mem_accounting;
+ 
+ #endif /* _DMA_HEAPS_H */
+-- 
+Created with Armbian build tools https://github.com/armbian/build
+
