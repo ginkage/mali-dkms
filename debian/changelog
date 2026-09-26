@@ -6,6 +6,10 @@ mali-valhall-g610 (1.0.1) unstable; urgency=medium
     ENOENT and GNOME Shell/mutter cannot start.
   * Pass WQ_PERCPU to the six implicitly per-CPU workqueues, silencing the
     alloc_workqueue() WARN on 6.17+ kernels (defined as 0 on older kernels).
+  * Register the "core" clock and "mali" supply with the OPP core on mainline
+    (vendor rockchip_init_opp_table() is stubbed), so DVFS scales vdd_gpu
+    too; previously it stayed at 750 mV and the SCMI/PVTPLL "1 GHz" ran slow.
+    Skip SCMI clock rate changes while the GPU is runtime-suspended.
 
  -- Ivan Podogov <ginkage.uk@gmail.com>  Fri, 25 Sep 2026 23:59:00 +0100
 

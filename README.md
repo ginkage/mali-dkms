@@ -83,8 +83,13 @@ a GPU fault) — replaced with a 2 s `wait_event_timeout()` + GPU-reset recovery
 `MODULE_DESCRIPTION` (silences the 6.x build warning).
 
 **Functional caveats** (none block rendering): DVFS works via the standard DT
-`operating-points-v2` table (loaded with `dev_pm_opp_of_add_table()`), but Rockchip's
-vendor voltage **binning/AVS/read-margin** tuning is not applied; GPU-page migration
+`operating-points-v2` table (loaded with `dev_pm_opp_of_add_table()`). Because the vendor
+`rockchip_init_opp_table()` is stubbed out, the platform code registers the `core` clock and
+the `mali` supply with the OPP core itself (`devm_pm_opp_set_config()`). Without this, only
+the clock scaled and `vdd_gpu` stayed at its boot voltage (750 mV vs 850 mV for 1 GHz), which
+on the SCMI/PVTPLL GPU clock (Armbian's `rk35xx-panthor-1GHz.patch`) cost real
+throughput. A `config_clks` hook also skips SCMI rate changes while the GPU is
+runtime-suspended, which can otherwise SError in TF-A. Rockchip's vendor voltage **binning/AVS/read-margin** tuning is not applied; GPU-page migration
 (memory compaction of GPU pages) is disabled unless the optional kernel patch is applied
 (see *Optional: GPU page migration* below).
 

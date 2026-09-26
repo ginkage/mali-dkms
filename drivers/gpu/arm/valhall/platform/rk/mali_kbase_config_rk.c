@@ -671,6 +671,33 @@ static const struct of_device_id rockchip_mali_of_match[] = {
 
 #endif /* CONFIG_ROCKCHIP_OPP -- end of vendor OPP-select helpers */
 
+#if !IS_ENABLED(CONFIG_ROCKCHIP_OPP)
+#include <linux/pm_opp.h>
+
+/* mali-dkms: on RK3588 the "core" clock may be SCMI_CLK_GPU (TF-A switches it
+ * onto the GPU PVTPLL for high rates). Setting its rate while the GPU is
+ * runtime-suspended (CLK_GPU gated / PD_GPU off) can SError in TF-A, and kbase
+ * queues devfreq_suspend_device() from its idle path, which drops to the
+ * opp-suspend rate right around power-off. Skip the clock write in that case,
+ * as the matching Armbian panthor patch does; the regulator is still updated
+ * and devfreq_resume_device() sets the real rate once the GPU is back up.
+ */
+static int rk_mainline_opp_config_clks(struct device *dev, struct opp_table *opp_table,
+				       struct dev_pm_opp *opp, void *data, bool scaling_down)
+{
+	struct kbase_device *kbdev = dev_get_drvdata(dev);
+	struct devfreq *devfreq = kbdev ? kbdev->devfreq : NULL;
+	int ret = 0;
+
+	pm_runtime_get_noresume(dev);
+	if (!pm_runtime_suspended(dev) || !devfreq || !devfreq->suspend_freq)
+		ret = dev_pm_opp_config_clks_simple(dev, opp_table, opp, data, scaling_down);
+	pm_runtime_put_noidle(dev);
+
+	return ret;
+}
+#endif
+
 int kbase_platform_rk_init_opp_table(struct kbase_device *kbdev)
 {
 #if IS_ENABLED(CONFIG_ROCKCHIP_OPP)
@@ -684,7 +711,25 @@ int kbase_platform_rk_init_opp_table(struct kbase_device *kbdev)
 	/* mali-dkms: mainline kernels have no Rockchip OPP-select BSP (the helpers
 	 * above compile out). Load the standard operating-points-v2 table from DT so
 	 * kbase devfreq gets a frequency table and DVFS works.
+	 *
+	 * rockchip_init_opp_table() is what normally hands the OPP core the clock
+	 * and "mali" supply; without it dev_pm_opp_set_rate() only changes the
+	 * clock and vdd_gpu stays at its boot voltage (too low for the upper OPPs,
+	 * which on the PVTPLL means a lower real frequency). Register both here.
 	 */
+	static const char *const clk_names[] = { "core", NULL };
+	static const char *const reg_names[] = { "mali", NULL };
+	struct dev_pm_opp_config config = {
+		.clk_names = clk_names,
+		.config_clks = rk_mainline_opp_config_clks,
+		.regulator_names = reg_names,
+	};
+	int err;
+
+	err = devm_pm_opp_set_config(kbdev->dev, &config);
+	if (err)
+		return err;
+
 	return dev_pm_opp_of_add_table(kbdev->dev);
 #endif
 }
