@@ -89,7 +89,12 @@ the `mali` supply with the OPP core itself (`devm_pm_opp_set_config()`). Without
 the clock scaled and `vdd_gpu` stayed at its boot voltage (750 mV vs 850 mV for 1 GHz), which
 on the SCMI/PVTPLL GPU clock (Armbian's `rk35xx-panthor-1GHz.patch`) cost real
 throughput. A `config_clks` hook also skips SCMI rate changes while the GPU is
-runtime-suspended, which can otherwise SError in TF-A. Rockchip's vendor voltage **binning/AVS/read-margin** tuning is not applied; GPU-page migration
+runtime-suspended, which can otherwise SError in TF-A. Instead, the runtime-suspend callback
+drops the clock to 200 MHz while `PD_GPU` is still on, as the vendor code does: a domain
+powered down with the clock on the PVTPLL intermittently fails to power back up ("failed to
+get ack on domain 'gpu'"), which kbase turned into an SError panic. The `gpu_clk_suspend_guard`
+module parameter (default on) controls this; if a power-up still fails, the platform code
+logs the PMU state and releases the domain's bus idle itself. Rockchip's vendor voltage **binning/AVS/read-margin** tuning is not applied; GPU-page migration
 (memory compaction of GPU pages) is disabled unless the optional kernel patch is applied
 (see *Optional: GPU page migration* below).
 

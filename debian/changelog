@@ -10,6 +10,11 @@ mali-valhall-g610 (1.0.1) unstable; urgency=medium
     (vendor rockchip_init_opp_table() is stubbed), so DVFS scales vdd_gpu
     too; previously it stayed at 750 mV and the SCMI/PVTPLL "1 GHz" ran slow.
     Skip SCMI clock rate changes while the GPU is runtime-suspended.
+  * Drop the SCMI GPU clock to 200 MHz before runtime suspend, as the vendor
+    code does. PD_GPU powered down with the clock on the PVTPLL could fail to
+    power up ("failed to get ack on domain 'gpu'") and kbase then panicked
+    with an SError. If a power-up still fails, log the PMU state and release
+    the domain's bus idle instead of carrying on with the GPU unreachable.
 
  -- Ivan Podogov <ginkage.uk@gmail.com>  Fri, 25 Sep 2026 23:59:00 +0100
 

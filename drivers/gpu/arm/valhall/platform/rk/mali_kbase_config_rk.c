@@ -200,10 +200,162 @@ struct kbase_platform_funcs_conf platform_funcs = {
 
 /*---------------------------------------------------------------------------*/
 
+#if !IS_ENABLED(CONFIG_ROCKCHIP_OPP)
+#include <linux/iopoll.h>
+
+/* mali-dkms: on mainline the GPU "core" clock is SCMI_CLK_GPU, which TF-A
+ * sources from the GPU PVTPLL at high rates. PD_GPU only enables the CRU bus
+ * and core-group clocks while it powers up, and the vendor code that drops the
+ * SCMI clock to POWER_DOWN_FREQ before power-off (is_scmi_clk) is only set up
+ * by the Rockchip OPP BSP, so it never runs here. The devfreq suspend rate
+ * doesn't help either: rk_mainline_opp_config_clks() skips that write once the
+ * GPU is suspended, which it often already is. If PD_GPU goes down with the
+ * clock on the PVTPLL, the next power-up fails the NIU idle release ("failed
+ * to get ack on domain 'gpu'"), leaving the domain powered but its bus idled;
+ * kbase ignores the failed power-on and its next register access is an SError.
+ * On a ROCK 5A that was 25 of 300 power-ups; dropping the clock to 200 MHz
+ * released the NIU every time, waiting longer at the old rate never did.
+ *
+ * gpu_clk_suspend_guard: drop the core clock to POWER_DOWN_FREQ in the runtime
+ * suspend callback (PD_GPU still on) and restore it on resume, as the vendor
+ * code does with is_scmi_clk. With it, 0 of 300 power-ups failed.
+ */
+static bool gpu_clk_suspend_guard = true;
+module_param(gpu_clk_suspend_guard, bool, 0644);
+MODULE_PARM_DESC(gpu_clk_suspend_guard,
+		 "Drop the SCMI GPU clock to 200 MHz before runtime suspend (RK3588 mainline)");
+
+static struct clk *rk_core_clk;
+
+/* Last "core" rate the OPP core wrote, and the rate whose write the config_clks
+ * hook skipped because the GPU was already suspended (0 if none since).
+ */
+static unsigned long rk_core_clk_written;
+static unsigned long rk_core_clk_skipped;
+
+/* RK3588 PMU registers for PD_GPU, see drivers/pmdomain/rockchip/pm-domains.c */
+#define RK3588_PMU_PWR_CON	0x14c	/* bit 0: 1 = off, write mask in [31:16] */
+#define RK3588_PMU_IDLE_REQ	0x10c	/* bit 0: NIU idle request, write mask in [31:16] */
+#define RK3588_PMU_IDLE_ACK	0x118
+#define RK3588_PMU_IDLE_ST	0x120
+#define RK3588_PMU_REPAIR_ST	0x290	/* bit 1: 1 = PD_GPU on */
+#define RK3588_PD_GPU		BIT(0)
+#define RK3588_PD_GPU_REPAIR	BIT(1)
+#define RK_PD_GPU_RELEASE_US	100000
+
+static void rk_pd_gpu_dump(struct device *dev, struct regmap *pmu, const char *when)
+{
+	u32 pwr = 0, req = 0, ack = 0, idle = 0, repair = 0;
+
+	regmap_read(pmu, RK3588_PMU_PWR_CON, &pwr);
+	regmap_read(pmu, RK3588_PMU_IDLE_REQ, &req);
+	regmap_read(pmu, RK3588_PMU_IDLE_ACK, &ack);
+	regmap_read(pmu, RK3588_PMU_IDLE_ST, &idle);
+	regmap_read(pmu, RK3588_PMU_REPAIR_ST, &repair);
+	dev_err(dev, "PD_GPU %s: pwr_con=%#x idle_req=%#x idle_ack=%#x idle_st=%#x repair_st=%#x core_clk written=%lu skipped=%lu guard=%d\n",
+		when, pwr, req, ack, idle, repair, rk_core_clk_written, rk_core_clk_skipped, gpu_clk_suspend_guard);
+}
+
+static bool rk_pd_gpu_idle_released(struct regmap *pmu)
+{
+	u32 ack = 0, idle = 0;
+
+	regmap_read(pmu, RK3588_PMU_IDLE_ACK, &ack);
+	regmap_read(pmu, RK3588_PMU_IDLE_ST, &idle);
+	return !(ack & RK3588_PD_GPU) && !(idle & RK3588_PD_GPU);
+}
+
+static int rk_pd_gpu_release_idle(struct regmap *pmu)
+{
+	bool released;
+
+	regmap_write(pmu, RK3588_PMU_IDLE_REQ, RK3588_PD_GPU << 16);
+	return read_poll_timeout(rk_pd_gpu_idle_released, released, released,
+				 100, RK_PD_GPU_RELEASE_US, false, pmu);
+}
+
+/* Called after pm_runtime_get_sync() failed. The pmdomain driver has left PD_GPU
+ * powered with its NIU still idled, and will not retry the idle release (it
+ * sees the domain on). Release it here; which step works says why it failed.
+ * The domain's QoS registers are not restored on this path.
+ */
+static int rk_pm_recover_pd_gpu(struct kbase_device *kbdev)
+{
+	struct device *dev = kbdev->dev;
+	struct regmap *pmu;
+	u32 repair = 0;
+	int err;
+
+	pmu = syscon_regmap_lookup_by_compatible("rockchip,rk3588-pmu");
+	if (IS_ERR(pmu))
+		return PTR_ERR(pmu);
+
+	rk_pd_gpu_dump(dev, pmu, "power-up failed");
+
+	regmap_read(pmu, RK3588_PMU_REPAIR_ST, &repair);
+	if (!(repair & RK3588_PD_GPU_REPAIR))
+		return -EIO;
+
+	if (!rk_pd_gpu_release_idle(pmu)) {
+		dev_warn(dev, "PD_GPU recovered: idle released on retry with the clock unchanged\n");
+		return 0;
+	}
+	rk_pd_gpu_dump(dev, pmu, "idle release retry failed");
+
+	if (!rk_core_clk)
+		return -ETIMEDOUT;
+	err = clk_set_rate(rk_core_clk, POWER_DOWN_FREQ);
+	if (err) {
+		dev_err(dev, "failed to set core clock to %u: %d\n", POWER_DOWN_FREQ, err);
+		return err;
+	}
+	if (!rk_pd_gpu_release_idle(pmu)) {
+		dev_warn(dev, "PD_GPU recovered: idle released after dropping the core clock to %u\n",
+			 POWER_DOWN_FREQ);
+		return 0;
+	}
+	rk_pd_gpu_dump(dev, pmu, "recovery failed");
+	return -ETIMEDOUT;
+}
+
+static void rk_mainline_clk_guard_off(struct kbase_device *kbdev)
+{
+	if (!gpu_clk_suspend_guard || !rk_core_clk)
+		return;
+	if (clk_set_rate(rk_core_clk, POWER_DOWN_FREQ))
+		dev_err(kbdev->dev, "failed to set power down rate\n");
+}
+
+static void rk_mainline_clk_guard_on(struct kbase_device *kbdev)
+{
+	if (!rk_core_clk || !kbdev->current_nominal_freq)
+		return;
+	/* Also covers a clock dropped by rk_pm_recover_pd_gpu(). */
+	if (clk_get_rate(rk_core_clk) != kbdev->current_nominal_freq &&
+	    clk_set_rate(rk_core_clk, kbdev->current_nominal_freq))
+		dev_err(kbdev->dev, "failed to restore clk rate\n");
+}
+#else
+static inline int rk_pm_recover_pd_gpu(struct kbase_device *kbdev)
+{
+	return -ETIMEDOUT;
+}
+
+static inline void rk_mainline_clk_guard_off(struct kbase_device *kbdev)
+{
+}
+
+static inline void rk_mainline_clk_guard_on(struct kbase_device *kbdev)
+{
+}
+#endif
+
 static __maybe_unused int rk_pm_callback_runtime_on(struct kbase_device *kbdev)
 {
 	struct rockchip_opp_info *opp_info = &kbdev->opp_info;
 	int ret = 0;
+
+	rk_mainline_clk_guard_on(kbdev);
 
 	if (!kbdev->current_nominal_freq)
 		return 0;
@@ -233,6 +385,7 @@ static __maybe_unused void rk_pm_callback_runtime_off(struct kbase_device *kbdev
 		if (clk_set_rate(opp_info->clk, POWER_DOWN_FREQ))
 			dev_err(kbdev->dev, "failed to set power down rate\n");
 	}
+	rk_mainline_clk_guard_off(kbdev);
 	opp_info->current_rm = UINT_MAX;
 }
 
@@ -279,6 +432,19 @@ static int rk_pm_callback_power_on(struct kbase_device *kbdev)
 		 * 将在 pm_domain 的 runtime_pm_callbacks 中完成.
 		 */
 		err = pm_runtime_get_sync(kbdev->dev);
+		if (err < 0) {
+			/* A failed resume leaves the usage count raised and
+			 * power.runtime_error set; drop the count, and reset the
+			 * status only to retry once PD_GPU has been recovered.
+			 */
+			pm_runtime_put_noidle(kbdev->dev);
+			if (!rk_pm_recover_pd_gpu(kbdev)) {
+				pm_runtime_set_suspended(kbdev->dev);
+				err = pm_runtime_get_sync(kbdev->dev);
+				if (err < 0)
+					pm_runtime_put_noidle(kbdev->dev);
+			}
+		}
 		if (err < 0) {
 			rockchip_opp_dvfs_unlock(opp_info);
 			E("failed to runtime resume device: %d.", err);
@@ -690,8 +856,15 @@ static int rk_mainline_opp_config_clks(struct device *dev, struct opp_table *opp
 	int ret = 0;
 
 	pm_runtime_get_noresume(dev);
-	if (!pm_runtime_suspended(dev) || !devfreq || !devfreq->suspend_freq)
+	if (!pm_runtime_suspended(dev) || !devfreq || !devfreq->suspend_freq) {
 		ret = dev_pm_opp_config_clks_simple(dev, opp_table, opp, data, scaling_down);
+		if (!ret) {
+			rk_core_clk_written = dev_pm_opp_get_freq(opp);
+			rk_core_clk_skipped = 0;
+		}
+	} else {
+		rk_core_clk_skipped = dev_pm_opp_get_freq(opp);
+	}
 	pm_runtime_put_noidle(dev);
 
 	return ret;
@@ -729,6 +902,13 @@ int kbase_platform_rk_init_opp_table(struct kbase_device *kbdev)
 	err = devm_pm_opp_set_config(kbdev->dev, &config);
 	if (err)
 		return err;
+
+	rk_core_clk = devm_clk_get(kbdev->dev, "core");
+	if (IS_ERR(rk_core_clk)) {
+		dev_warn(kbdev->dev, "no core clock for the suspend guard: %ld\n",
+			 PTR_ERR(rk_core_clk));
+		rk_core_clk = NULL;
+	}
 
 	return dev_pm_opp_of_add_table(kbdev->dev);
 #endif
