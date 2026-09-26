@@ -1,0 +1,109 @@
+drm/rockchip: vop2: let the rk3588 cluster windows scan out linear buffers
+
+The rk3588 cluster windows - the primary planes - are registered with
+format_modifiers_afbc, which lacks DRM_FORMAT_MOD_LINEAR, so they accept
+AFBC framebuffers only. rockchip_vop2_mod_supported() only means that for
+rk3568 ("The cluster window on 3568 is AFBC-only"; "Linear is otherwise
+supported everywhere"), the linear path of vop2_plane_atomic_update()
+handles cluster windows, and the vendor kernel scans out linear buffers on
+them.
+
+With the Mali kbase driver, Mesa's zink can only allocate XRGB8888 scanout
+buffers linearly: the Mali Vulkan driver supports AFBC for R8G8B8A8 only. So
+a compositor running on zink (mutter) found no modifier its GPU and the
+primary plane have in common, and never displayed a frame.
+
+Give the rk3588 cluster windows their own list, the AFBC modifiers plus
+LINEAR, as rk3576 does.
+
+Carried by mali-dkms (Rockchip Mali-Valhall DKMS).
+---
+diff --git drivers/gpu/drm/rockchip/rockchip_vop2_reg.c drivers/gpu/drm/rockchip/rockchip_vop2_reg.c
+index f0d50200d..1f382e450 100644
+--- a/drivers/gpu/drm/rockchip/rockchip_vop2_reg.c
++++ b/drivers/gpu/drm/rockchip/rockchip_vop2_reg.c
+@@ -236,6 +236,48 @@ static const uint64_t format_modifiers_afbc[] = {
+ 	DRM_FORMAT_MOD_INVALID,
+ };
+ 
++/*
++ * rk3588 cluster windows scan out linear buffers as well as AFBC ones; only
++ * the rk3568 cluster windows are AFBC-only (see rockchip_vop2_mod_supported()).
++ */
++static const uint64_t format_modifiers_rk3588_cluster[] = {
++	DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_BLOCK_SIZE_16x16),
++
++	DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_BLOCK_SIZE_16x16 |
++				AFBC_FORMAT_MOD_SPARSE),
++
++	DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_BLOCK_SIZE_16x16 |
++				AFBC_FORMAT_MOD_YTR),
++
++	DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_BLOCK_SIZE_16x16 |
++				AFBC_FORMAT_MOD_CBR),
++
++	DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_BLOCK_SIZE_16x16 |
++				AFBC_FORMAT_MOD_YTR |
++				AFBC_FORMAT_MOD_SPARSE),
++
++	DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_BLOCK_SIZE_16x16 |
++				AFBC_FORMAT_MOD_CBR |
++				AFBC_FORMAT_MOD_SPARSE),
++
++	DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_BLOCK_SIZE_16x16 |
++				AFBC_FORMAT_MOD_YTR |
++				AFBC_FORMAT_MOD_CBR),
++
++	DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_BLOCK_SIZE_16x16 |
++				AFBC_FORMAT_MOD_YTR |
++				AFBC_FORMAT_MOD_CBR |
++				AFBC_FORMAT_MOD_SPARSE),
++
++	/* SPLIT mandates SPARSE, RGB modes mandates YTR */
++	DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_BLOCK_SIZE_16x16 |
++				AFBC_FORMAT_MOD_YTR |
++				AFBC_FORMAT_MOD_SPARSE |
++				AFBC_FORMAT_MOD_SPLIT),
++	DRM_FORMAT_MOD_LINEAR,
++	DRM_FORMAT_MOD_INVALID,
++};
++
+ /* used from rk3576, afbc 32*8 half mode */
+ static const uint64_t format_modifiers_rk3576_afbc[] = {
+ 	DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_BLOCK_SIZE_32x8 |
+@@ -1277,7 +1319,7 @@ static const struct vop2_win_data rk3588_vop_win_data[] = {
+ 		.possible_vp_mask = BIT(0) | BIT(1) | BIT(2) | BIT(3),
+ 		.formats = formats_cluster,
+ 		.nformats = ARRAY_SIZE(formats_cluster),
+-		.format_modifiers = format_modifiers_afbc,
++		.format_modifiers = format_modifiers_rk3588_cluster,
+ 		.layer_sel_id = { 0, 0, 0, 0 },
+ 		.supported_rotations = DRM_MODE_ROTATE_90 | DRM_MODE_ROTATE_270 |
+ 				       DRM_MODE_REFLECT_X | DRM_MODE_REFLECT_Y,
+@@ -1296,7 +1338,7 @@ static const struct vop2_win_data rk3588_vop_win_data[] = {
+ 		.possible_vp_mask = BIT(0) | BIT(1) | BIT(2) | BIT(3),
+ 		.formats = formats_cluster,
+ 		.nformats = ARRAY_SIZE(formats_cluster),
+-		.format_modifiers = format_modifiers_afbc,
++		.format_modifiers = format_modifiers_rk3588_cluster,
+ 		.layer_sel_id = { 1, 1, 1, 1 },
+ 		.supported_rotations = DRM_MODE_ROTATE_90 | DRM_MODE_ROTATE_270 |
+ 				       DRM_MODE_REFLECT_X | DRM_MODE_REFLECT_Y,
+@@ -1315,7 +1357,7 @@ static const struct vop2_win_data rk3588_vop_win_data[] = {
+ 		.possible_vp_mask = BIT(0) | BIT(1) | BIT(2) | BIT(3),
+ 		.formats = formats_cluster,
+ 		.nformats = ARRAY_SIZE(formats_cluster),
+-		.format_modifiers = format_modifiers_afbc,
++		.format_modifiers = format_modifiers_rk3588_cluster,
+ 		.layer_sel_id = { 4, 4, 4, 4 },
+ 		.supported_rotations = DRM_MODE_ROTATE_90 | DRM_MODE_ROTATE_270 |
+ 				       DRM_MODE_REFLECT_X | DRM_MODE_REFLECT_Y,
+@@ -1334,7 +1376,7 @@ static const struct vop2_win_data rk3588_vop_win_data[] = {
+ 		.possible_vp_mask = BIT(0) | BIT(1) | BIT(2) | BIT(3),
+ 		.formats = formats_cluster,
+ 		.nformats = ARRAY_SIZE(formats_cluster),
+-		.format_modifiers = format_modifiers_afbc,
++		.format_modifiers = format_modifiers_rk3588_cluster,
+ 		.layer_sel_id =  { 5, 5, 5, 5 },
+ 		.supported_rotations = DRM_MODE_ROTATE_90 | DRM_MODE_ROTATE_270 |
+ 				       DRM_MODE_REFLECT_X | DRM_MODE_REFLECT_Y,

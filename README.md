@@ -216,8 +216,8 @@ rebuilds the module on kernel upgrades; it does not control loading.)
 `valhall_kbase` is only the GPU **compute** driver (`/dev/mali0`). The full Rockchip libmali
 userspace — native GLES/Vulkan, plus Mesa/**Zink** GL-on-Vulkan and **XWayland** — needs two
 more things from the kernel that mainline (unlike the Rockchip vendor kernel) stopped providing
-once panthor is displaced. Both are carried here as kernel patches; apply them to the target
-kernel source and rebuild.
+once panthor is displaced, and a compositor running on Zink needs a third. All are carried here
+as kernel patches; apply them to the target kernel source and rebuild.
 
 **Render node — `0002-drm-rockchip-expose-render-node.patch`.** On Rockchip the DRM **render
 node** (`/dev/dri/renderD128`) is what Mesa/Zink and XWayland's glamor open for their GBM/winsys
@@ -242,6 +242,18 @@ cache flush needs. The vendor's `*_partial` cpu-access ops and kernel-space
 (only the standard full `DMA_BUF_IOCTL_SYNC`). Built-in (`=y`), so this one needs a full kernel
 rebuild.
 
+**Linear scanout on RK3588 primary planes — `0004-drm-rockchip-vop2-rk3588-cluster-linear.patch`.**
+Only needed to run the compositor itself on Zink (e.g. mutter with `MESA_LOADER_DRIVER_OVERRIDE=zink`
+and the WSI layer's `WSI_FAKE_DRM_DEVICE=/dev/dri/card0`). Mainline registers the RK3588 cluster
+windows — the primary planes — with AFBC modifiers only, although `rockchip_vop2_mod_supported()`
+treats only the RK3568 ones as AFBC-only and the vendor kernel scans out linear buffers on them.
+libMaliVulkan renders AFBC only for `R8G8B8A8`, so Zink can allocate `XRGB8888` scanout buffers
+only linearly, and with no modifier in common with the plane the compositor never shows a frame.
+The patch gives the RK3588 cluster windows the AFBC modifiers plus `DRM_FORMAT_MOD_LINEAR`, as
+RK3576 has. Like 0002 it only rebuilds `rockchipdrm.ko`. 10 bpc stays AFBC-only on RK3588, which
+libMaliVulkan cannot render, so also set Mesa's `allow_rgb10_configs=false`, or mutter picks
+`XRGB2101010` for the primary plane and fails the same way.
+
 The result is the split the Rockchip 6.1 vendor kernel uses, reproduced on mainline: **kbase**
 drives the GPU (`/dev/mali0`), patched **rockchip-drm** hands out the render node for the
 Zink/Mesa/XWayland winsys, **libmali** does GLES/Vulkan plus the uncached heap, and **Zink**
@@ -249,7 +261,9 @@ layers GL on top of libMaliVulkan.
 
 **Status — confirmed on hardware.** On a `7.1.2-edge-rockchip64` build with 0002 + 0003
 applied, `/dev/dri/renderD128` (`rockchip-drm`) and `/dev/dma_heap/system-uncached` are both
-present, and XWayland, Vulkan, and Zink-on-libMaliVulkan all run on `valhall_kbase`.
+present, and XWayland, Vulkan, and Zink-on-libMaliVulkan all run on `valhall_kbase`. On `7.2.8-edge-rockchip64` with 0004 as well, GNOME Shell 50 (mutter)
+runs on Zink with the primary plane scanning out linear `XRGB8888`, and glmark2-wayland runs
+under it.
 
 **dma-heap permissions.** Mainline creates `/dev/dma_heap/*` as `root:root 0600`. libmali
 cannot open the heap, so its `gbm_create_device()` fails with a misleading `ENOENT` and
